@@ -1,0 +1,26 @@
+{
+  "name": "yanagi",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev -w @yanagi/core-api",
+    "dev:community": "npm run dev -w @yanagi/community-bot",
+    "dev:game": "npm run dev -w @yanagi/game-bot",
+    "dev:ai": "npm run dev -w @yanagi/ai-bot",
+    "dev:voice": "npm run dev -w @yanagi/voice-bot",
+    "dev:tts": "npm run dev -w @yanagi/tts-worker",
+    "dev:worker": "npm run dev -w @yanagi/background-worker",
+    "format": "prettier --write \"**/*.{ts,json,yml,yaml,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,json,yml,yaml,md}\"",
+    "build:client": "npm run build -w @yanagi/core-api-client && npm run build -w @yanagi/bot-presence",
+    "typecheck": "npm run build:client && npm run typecheck --workspaces --if-present",
+    "test": "npm run build:client && npm run test --workspaces --if-present",
+    "build": "npm run build:client && npm run build -w @yanagi/core-api && npm run build -w @yanagi/community-bot && npm run build -w @yanagi/game-bot && npm run build -w @yanagi/ai-bot && npm run build -w @yanagi/voice-bot && npm run build -w @yanagi/background-worker && npm run build -w @yanagi/tts-worker"
+  },
+  "devDependencies": {
+    "prettier": "3.5.3"
+  }
+}

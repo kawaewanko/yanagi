@@ -1,0 +1,17 @@
+[Unit]
+Description=Yanagi Discord bots and workers
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/yanagi
+ExecStart=/opt/yanagi/scripts/start-all-bots.sh
+ExecStop=/opt/yanagi/scripts/stop-all-bots.sh
+RemainAfterExit=yes
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,344 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: yanagi
+      POSTGRES_USER: yanagi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yanagi_dev_only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yanagi -d yanagi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  core-api:
+    image: yanagi:local
+    build: .
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: yanagi
+      PGUSER: yanagi
+      PGPASSWORD: ${POSTGRES_PASSWORD:-yanagi_dev_only}
+      CORE_API_HOST: 0.0.0.0
+      CORE_API_PORT: 3000
+      CORE_API_KEY_COMMUNITY: ${CORE_API_KEY_COMMUNITY:?Set CORE_API_KEY_COMMUNITY in .env}
+      CORE_API_KEY_GAME: ${CORE_API_KEY_GAME:?Set CORE_API_KEY_GAME in .env}
+      CORE_API_KEY_AI: ${CORE_API_KEY_AI:?Set CORE_API_KEY_AI in .env}
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      CORE_API_KEY_WORKER: ${CORE_API_KEY_WORKER:?Set CORE_API_KEY_WORKER in .env}
+      CORE_API_KEY_TTS: ${CORE_API_KEY_TTS:?Set CORE_API_KEY_TTS in .env}
+      WEBHOOK_SECRET_DEFAULT: ${WEBHOOK_SECRET_DEFAULT:-}
+      TTS_AUDIO_DIR: /var/lib/yanagi/tts
+      AI_ENABLED: ${AI_ENABLED:-false}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:1.5b}
+    volumes:
+      - tts_audio_data:/var/lib/yanagi/tts
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  community-bot:
+    image: yanagi:local
+    command: ["node", "apps/community-bot/dist/index.js"]
+    profiles: ["bots"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_COMMUNITY: ${CORE_API_KEY_COMMUNITY:?Set CORE_API_KEY_COMMUNITY in .env}
+      COMMUNITY_BOT_TOKEN: ${COMMUNITY_BOT_TOKEN:-}
+      COMMUNITY_WELCOME_CHANNEL_ID: ${COMMUNITY_WELCOME_CHANNEL_ID:-}
+      COMMUNITY_WAITING_VOICE_CHANNEL_ID: ${COMMUNITY_WAITING_VOICE_CHANNEL_ID:-}
+      COMMUNITY_TEMP_VOICE_CATEGORY_ID: ${COMMUNITY_TEMP_VOICE_CATEGORY_ID:-}
+      COMMUNITY_AUTO_ROLE_ID: ${COMMUNITY_AUTO_ROLE_ID:-}
+      COMMUNITY_VERIFY_ROLE_ID: ${COMMUNITY_VERIFY_ROLE_ID:-}
+      COMMUNITY_VOICE_LOG_CHANNEL_ID: ${COMMUNITY_VOICE_LOG_CHANNEL_ID:-}
+      COMMUNITY_INTRO_CHANNEL_ID: ${COMMUNITY_INTRO_CHANNEL_ID:-}
+      COMMUNITY_SERVER_REGISTER_CHANNEL_ID: ${COMMUNITY_SERVER_REGISTER_CHANNEL_ID:-}
+      COMMUNITY_HEALTH_ALERT_CHANNEL_ID: ${COMMUNITY_HEALTH_ALERT_CHANNEL_ID:-}
+      COMMUNITY_HEALTH_ALERT_MENTION_ROLE_ID: ${COMMUNITY_HEALTH_ALERT_MENTION_ROLE_ID:-}
+      COMMUNITY_VC_AUTO_MUTE: ${COMMUNITY_VC_AUTO_MUTE:-false}
+      COMMUNITY_VC_AFK_CHANNEL_ID: ${COMMUNITY_VC_AFK_CHANNEL_ID:-}
+      COMMUNITY_VC_AFK_MINUTES: ${COMMUNITY_VC_AFK_MINUTES:-30}
+      VC_RECRUIT_ROLE_ID: ${VC_RECRUIT_ROLE_ID:-}
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  game-bot:
+    image: yanagi:local
+    command: ["node", "apps/game-bot/dist/index.js"]
+    profiles: ["game"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_GAME: ${CORE_API_KEY_GAME:?Set CORE_API_KEY_GAME in .env}
+      GAME_BOT_TOKEN: ${GAME_BOT_TOKEN:-}
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ai-bot:
+    image: yanagi:local
+    command: ["node", "apps/ai-bot/dist/index.js"]
+    profiles: ["ai-bot"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_AI: ${CORE_API_KEY_AI:?Set CORE_API_KEY_AI in .env}
+      AI_BOT_TOKEN: ${AI_BOT_TOKEN:-}
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  voice-bot:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_BOT_TOKEN:-}
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tts-bot-1:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-tts"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_TTS_BOT_TOKEN_1:?Set VOICE_TTS_BOT_TOKEN_1 in .env}
+      VOICE_BOT_MODE: tts
+      BOT_SERVICE_NAME: tts-1
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tts-bot-2:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-tts"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_TTS_BOT_TOKEN_2:?Set VOICE_TTS_BOT_TOKEN_2 in .env}
+      VOICE_BOT_MODE: tts
+      BOT_SERVICE_NAME: tts-2
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tts-bot-3:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-tts"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_TTS_BOT_TOKEN_3:?Set VOICE_TTS_BOT_TOKEN_3 in .env}
+      VOICE_BOT_MODE: tts
+      BOT_SERVICE_NAME: tts-3
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  music-bot-1:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-music"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_MUSIC_BOT_TOKEN_1:?Set VOICE_MUSIC_BOT_TOKEN_1 in .env}
+      VOICE_BOT_MODE: music
+      BOT_SERVICE_NAME: music-1
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  music-bot-2:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-music"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_MUSIC_BOT_TOKEN_2:?Set VOICE_MUSIC_BOT_TOKEN_2 in .env}
+      VOICE_BOT_MODE: music
+      BOT_SERVICE_NAME: music-2
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  music-bot-3:
+    image: yanagi:local
+    command: ["node", "apps/voice-bot/dist/index.js"]
+    profiles: ["voice-music"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_VOICE: ${CORE_API_KEY_VOICE:?Set CORE_API_KEY_VOICE in .env}
+      VOICE_BOT_TOKEN: ${VOICE_MUSIC_BOT_TOKEN_3:?Set VOICE_MUSIC_BOT_TOKEN_3 in .env}
+      VOICE_BOT_MODE: music
+      BOT_SERVICE_NAME: music-3
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  voicevox:
+    image: voicevox/voicevox_engine:latest
+    profiles: ["tts"]
+    ports:
+      - "127.0.0.1:50021:50021"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:50021/version', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_NUM_PARALLEL: 1
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  ollama-model:
+    image: ollama/ollama:latest
+    profiles: ["ai"]
+    entrypoint: ["ollama"]
+    command: ["pull", "${OLLAMA_MODEL:-qwen2.5:1.5b}"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  tts-worker:
+    image: yanagi:local
+    command: ["node", "apps/tts-worker/dist/index.js"]
+    profiles: ["tts"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_TTS: ${CORE_API_KEY_TTS:?Set CORE_API_KEY_TTS in .env}
+      VOICEVOX_URL: ${VOICEVOX_URL:-http://voicevox:50021}
+      VOICEVOX_SPEAKER: ${VOICEVOX_SPEAKER:-1}
+      TTS_AUDIO_DIR: /var/lib/yanagi/tts
+    volumes:
+      - tts_audio_data:/var/lib/yanagi/tts
+    depends_on:
+      core-api:
+        condition: service_healthy
+      voicevox:
+        condition: service_healthy
+    restart: unless-stopped
+
+  background-worker:
+    image: yanagi:local
+    command: ["node", "apps/background-worker/dist/index.js"]
+    profiles: ["maintenance"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      CORE_API_URL: http://core-api:3000
+      CORE_API_KEY_WORKER: ${CORE_API_KEY_WORKER:?Set CORE_API_KEY_WORKER in .env}
+      BACKGROUND_WORKER_INTERVAL_MS: ${BACKGROUND_WORKER_INTERVAL_MS:-86400000}
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
+    depends_on:
+      core-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db-backup:
+    image: postgres:16-alpine
+    profiles: ["backup"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: yanagi
+      PGUSER: yanagi
+      PGPASSWORD: ${POSTGRES_PASSWORD:-yanagi_dev_only}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >-
+      sh -c 'set -eu;
+      while true; do
+        stamp=$$(date -u +%Y%m%dT%H%M%SZ);
+        pg_dump -Fc -f "/backups/yanagi-$$stamp.dump";
+        chmod 600 "/backups/yanagi-$$stamp.dump";
+        find /backups -type f -name "yanagi-*.dump" -mtime +$${BACKUP_RETENTION_DAYS} -delete;
+        sleep "$${BACKUP_INTERVAL_SECONDS}";
+      done'
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  tts_audio_data:
+  ollama_data:

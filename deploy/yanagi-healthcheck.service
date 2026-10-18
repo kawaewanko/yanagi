@@ -1,0 +1,8 @@
+[Unit]
+Description=Yanagi Discord bots health check
+After=yanagi-bots.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/yanagi
+ExecStart=/opt/yanagi/scripts/health-check.sh

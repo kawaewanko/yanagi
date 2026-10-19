@@ -24,7 +24,7 @@ export class BotPresenceController {
     if (!this.activityLabel || this.activityLabel.length > 100) {
       throw new RangeError("Presence activity label must be 1-100 characters");
     }
-    this.intervalMilliseconds = options.intervalMilliseconds ?? 15_000;
+    this.intervalMilliseconds = options.intervalMilliseconds ?? 1_000;
     if (
       !Number.isInteger(this.intervalMilliseconds) ||
       this.intervalMilliseconds < 1

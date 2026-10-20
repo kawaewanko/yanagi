@@ -121,7 +121,7 @@ Community BotにはServer Members、Guild Voice States、Guild Moderation、Guil
 
 ## マイグレーション
 
-新規DBの初期化時は`database/init.sql`と番号付きSQLが実行されます。既存DBではCore API起動時に`schema_migrations`を確認し、advisory lock下で未適用のマイグレーションを順番に適用します。適用済みファイルのチェックサムが変わると起動を停止するため、適用済みSQLは変更せず、新しい番号のファイルを追加してください。
+新規DBの初期化時はPostgreSQLの`database/init.sql`を空の初期化フックとして使用し、Core API起動時に`schema_migrations`を確認して、advisory lock下で番号付きSQLを順番に適用します。スキーマ作成はCore APIのMigration Runnerに一本化しています。適用済みファイルのチェックサムが変わると起動を停止するため、適用済みSQLは変更せず、新しい番号のファイルを追加してください。
 
 外部通知マイグレーションは`020_external_notifications.sql`です。番号の重複を避けるため、追加時は既存の最大番号を確認してください。
 

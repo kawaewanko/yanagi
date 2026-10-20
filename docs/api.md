@@ -32,7 +32,7 @@ RSS取得は`etag`と`last_modified`を条件付きリクエストへ使い、�
 
 - `guild_feature_settings`: `feature_key`単位の有効化とJSON設定。更新者・更新時刻を必須にします。
 - `user_preferences`: Guildごとのタイムゾーン、ロケール、通知設定。誕生日・リマインダー・イベントで再利用します。
-- `notification_outbox`: 通知生成とDiscord送信を分離するOutbox。`dedupe_key`、状態、ロック時刻、再試行回数を持ちます。
+- `notification_outbox`: 通知生成とDiscord送信を分離するOutbox。`dedupe_key`、状態、ロック時刻、claim token、再試行回数を持ち、完了更新時は取得時のclaim tokenを検証します。
 - `external_subscriptions`: RSS、YouTube、Twitch、Webhookの購読共通モデル。アクセストークンやWebhook秘密値は保存せず、Secret Manager/環境変数の参照名だけを`secret_ref`に保存します。
 - `external_notification_events`: 購読単位の外部イベントIDで再送・再ポーリングを重複排除します。新規イベントは`notification_outbox`へ同一トランザクションで登録します。
 - `moderation_cases`: note、warn、timeout、kick、ban、unbanを共通ケース番号で管理します。

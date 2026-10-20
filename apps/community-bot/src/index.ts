@@ -15,6 +15,8 @@ import {
   type VoiceState,
 } from "discord.js";
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { CoreApiClient } from "@yanagi/core-api-client";
 import { BotPresenceController } from "@yanagi/bot-presence";
 import { auditChanges, type AuditSnapshot } from "./audit-events.js";
@@ -26,11 +28,88 @@ import {
 import { voiceChange } from "./voice-events.js";
 import { VoiceRecruitmentManager } from "./voice-recruitment.js";
 import { CommunityForms } from "./community-forms.js";
+import {
+  assignAutoRoleIfAllowed,
+  parseAutoRoleBlacklist,
+} from "./auto-role.js";
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
+}
+
+const MAX_RSS_BYTES = 2 * 1024 * 1024;
+
+function isBlockedIp(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [a, b] = address.split(".").map(Number);
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      a >= 224
+    );
+  }
+  const normalized = address.toLowerCase();
+  return (
+    normalized === "::" ||
+    normalized === "::1" ||
+    normalized.startsWith("fe80:") ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("ff") ||
+    normalized.startsWith("::ffff:10.") ||
+    normalized.startsWith("::ffff:192.168.") ||
+    normalized.startsWith("::ffff:127.")
+  );
+}
+
+async function assertSafeRssUrl(rawUrl: string): Promise<URL> {
+  const url = new URL(rawUrl);
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username ||
+    url.password
+  )
+    throw new Error("rss_url_not_allowed");
+  const addresses = isIP(url.hostname)
+    ? [url.hostname]
+    : (await lookup(url.hostname, { all: true })).map(({ address }) => address);
+  if (!addresses.length || addresses.some(isBlockedIp))
+    throw new Error("rss_url_not_allowed");
+  return url;
+}
+
+async function readLimitedResponse(response: Response): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > MAX_RSS_BYTES)
+    throw new Error("rss_response_too_large");
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_RSS_BYTES) throw new Error("rss_response_too_large");
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
 }
 
 const token = required("COMMUNITY_BOT_TOKEN");
@@ -40,6 +119,9 @@ const waitingVoiceChannelId =
 const temporaryVoiceCategoryId =
   process.env.COMMUNITY_TEMP_VOICE_CATEGORY_ID?.trim();
 let autoRoleId = process.env.COMMUNITY_AUTO_ROLE_ID?.trim() || null;
+const autoRoleBlacklist = parseAutoRoleBlacklist(
+  process.env.COMMUNITY_AUTO_ROLE_BLACKLIST_USER_IDS,
+);
 const verifyRoleId = process.env.COMMUNITY_VERIFY_ROLE_ID?.trim() || null;
 const voiceLogChannelId =
   process.env.COMMUNITY_VOICE_LOG_CHANNEL_ID?.trim() || null;
@@ -216,6 +298,7 @@ async function deliverNotificationOutbox(): Promise<void> {
     Array<{
       id: string;
       channel_id: string;
+      claimToken: string;
       payload: { message?: string; content?: string };
     }>
   >("/v1/notifications/outbox/claim", { limit: 20 });
@@ -226,6 +309,7 @@ async function deliverNotificationOutbox(): Promise<void> {
           items?: Array<{
             id: string;
             channel_id: string;
+            claimToken: string;
             payload: { message?: string; content?: string };
           }>;
         }
@@ -250,7 +334,7 @@ async function deliverNotificationOutbox(): Promise<void> {
     }
     await communityPost(
       `/v1/notifications/outbox/${encodeURIComponent(item.id)}/complete`,
-      { delivered, error: errorMessage },
+      { delivered, error: errorMessage, claimToken: item.claimToken },
     );
   }
 }
@@ -361,12 +445,16 @@ async function pollRssFeeds(): Promise<void> {
       )
         continue;
       try {
-        const response = await fetch(feed.url, {
+        const feedUrl = await assertSafeRssUrl(feed.url);
+        const response = await fetch(feedUrl, {
+          redirect: "manual",
           signal: AbortSignal.timeout(15_000),
           headers: { "user-agent": "YanagiBot RSS reader/1.0" },
         });
+        if (response.status >= 300 && response.status < 400)
+          throw new Error("rss_redirect_not_allowed");
         if (!response.ok) throw new Error(`rss_http_${response.status}`);
-        const xml = await response.text();
+        const xml = await readLimitedResponse(response);
         const channel = await client.channels.fetch(
           feed.announcement_channel_id,
         );
@@ -683,12 +771,7 @@ async function sendWelcome(
 }
 
 async function assignAutoRole(member: GuildMember): Promise<void> {
-  if (!autoRoleId) return;
-  const role = await member.guild.roles.fetch(autoRoleId);
-  if (!role)
-    throw new Error(`Configured auto role ${autoRoleId} was not found`);
-  if (!member.roles.cache.has(role.id))
-    await member.roles.add(role, "夜凪鯖の参加時自動ロール付与");
+  await assignAutoRoleIfAllowed(member, autoRoleId, autoRoleBlacklist);
 }
 
 async function sendVoiceLog(
@@ -768,11 +851,16 @@ client.on(Events.GuildMemberAdd, (member) => {
   void Promise.all([
     guildSettings
       .get(member.guild.id)
-      .then((settings) => sendWelcome(member, settings.welcomeChannelId)),
-    assignAutoRole(member),
+      .then((settings) => sendWelcome(member, settings.welcomeChannelId))
+      .catch((error: unknown) =>
+        reportEventError("member-join-welcome", error),
+      ),
+    assignAutoRole(member).catch((error: unknown) =>
+      reportEventError("member-join-auto-role", error),
+    ),
     recordAudit(member.guild.id, member.id, "member_join", {
       userTag: member.user.tag,
-    }),
+    }).catch((error: unknown) => reportEventError("member-join-audit", error)),
   ]).catch((error: unknown) => reportEventError("member-join", error));
 });
 

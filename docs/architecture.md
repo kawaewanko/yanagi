@@ -15,7 +15,7 @@ Core API が業務ルールとデータアクセスを担います。Bot から 
 
 ## 🔐 データ整合性と競合制御
 
-`database/init.sql` とCore API起動時のMigration Runnerが、番号付きSQLを順に適用します。Core API起動時はPostgreSQL advisory lockで排他し、マイグレーション台帳へ適用版とSHA-256を記録します。既存DBにも未適用SQLを番号順に適用し、台帳に記録済みのファイル内容が変わっていれば起動を拒否します。外部キー、CHECK/UNIQUE制約、検索用インデックスを定義しています。通知機能の事前準備として`010_notifications_and_feeds.sql`にRSS、誕生日、共通予約通知のキューを追加しました。RSS取得はCommunity Botの定期ポーリングへ接続し、Core APIのrss_feeds/rss_itemsで重複排除と通知済み状態を永続化します。予約通知・誕生日通知もCommunity Bot起動時に復元します。AIユーティリティはAI BotからCore APIのローカルAI基盤へ接続します。
+Core API起動時のMigration Runnerが、番号付きSQLを順に適用します。`database/init.sql`はPostgreSQLの初期化フックとして残していますが、二重適用を避けるためスキーマ作成は行いません。Core API起動時はPostgreSQL advisory lockで排他し、マイグレーション台帳へ適用版とSHA-256を記録します。既存DBにも未適用SQLを番号順に適用し、台帳に記録済みのファイル内容が変わっていれば起動を拒否します。外部キー、CHECK/UNIQUE制約、検索用インデックスを定義しています。通知機能の事前準備として`010_notifications_and_feeds.sql`にRSS、誕生日、共通予約通知のキューを追加しました。RSS取得はCommunity Botの定期ポーリングへ接続し、Core APIのrss_feeds/rss_itemsで重複排除と通知済み状態を永続化します。予約通知・誕生日通知もCommunity Bot起動時に復元します。AIユーティリティはAI BotからCore APIのローカルAI基盤へ接続します。
 
 日次上限とおみくじの日付は UTC 基準です。メッセージ付与は1回1ポイント、前回付与から30秒以上、日次100ポイントまでです。VC付与は1回1ポイント、前回付与から5分以上、日次60ポイントまでです。日付変更直後もクールダウンを維持し、メンバー行ロック中に上限を判定します。
 

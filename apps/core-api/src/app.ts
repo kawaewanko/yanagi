@@ -356,6 +356,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
     },
   });
   registerAuth(app, options.serviceKeys);
+  let lastMetricFailureLogAt = 0;
 
   app.addHook("onResponse", async (request, reply) => {
     if (request.url === "/health") return;
@@ -377,7 +378,11 @@ export function buildApp(options: AppOptions): FastifyInstance {
         [metricKey, dimensions],
       );
     } catch (error) {
-      request.log.warn({ err: error }, "metric recording failed");
+      const now = Date.now();
+      if (now - lastMetricFailureLogAt >= 60_000) {
+        lastMetricFailureLogAt = now;
+        request.log.warn({ err: error }, "metric recording failed");
+      }
     }
   });
 
@@ -1823,6 +1828,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
         Math.max(Number(request.body.limit ?? 10) || 10, 1),
         50,
       );
+      const claimToken = randomUUID();
       return withTransaction(options.pool, async (client) => {
         const result = await client.query(
           `WITH candidates AS (
@@ -1832,10 +1838,10 @@ export function buildApp(options: AppOptions): FastifyInstance {
            ORDER BY scheduled_at, id FOR UPDATE SKIP LOCKED LIMIT $1
          )
          UPDATE notification_outbox o
-         SET status = 'processing', attempts = o.attempts + 1, locked_at = NOW(), updated_at = NOW()
+         SET status = 'processing', attempts = o.attempts + 1, locked_at = NOW(), claim_token = $2, updated_at = NOW()
          FROM candidates c WHERE o.id = c.id
-         RETURNING o.id::text, o.guild_id, o.channel_id, o.kind, o.payload, o.attempts`,
-          [limit],
+         RETURNING o.id::text, o.guild_id, o.channel_id, o.kind, o.payload, o.attempts, o.claim_token AS "claimToken"`,
+          [limit, claimToken],
         );
         return { items: result.rows };
       });
@@ -1844,24 +1850,27 @@ export function buildApp(options: AppOptions): FastifyInstance {
 
   app.post<{
     Params: { id: string };
-    Body: { delivered: boolean; error?: string };
+    Body: { delivered: boolean; error?: string; claimToken: string };
   }>("/v1/notifications/outbox/:id/complete", async (request, reply) => {
     if (request.service !== "community" && request.service !== "worker")
       return reply.code(403).send({ error: "forbidden" });
     const status = request.body.delivered ? "sent" : "failed";
-    await options.pool.query(
+    const updated = await options.pool.query(
       `UPDATE notification_outbox
        SET status = CASE WHEN $2::boolean THEN 'sent' ELSE CASE WHEN attempts >= 10 THEN 'failed' ELSE 'pending' END END,
            sent_at = CASE WHEN $2::boolean THEN NOW() ELSE sent_at END,
            last_error = CASE WHEN $2::boolean THEN NULL ELSE LEFT($3, 1000) END,
-           locked_at = NULL, updated_at = NOW()
-       WHERE id = $1`,
+           locked_at = NULL, claim_token = NULL, updated_at = NOW()
+       WHERE id = $1 AND claim_token = $4 AND status = 'processing'`,
       [
         request.params.id,
         request.body.delivered,
         request.body.error ?? "delivery_failed",
+        request.body.claimToken,
       ],
     );
+    if (updated.rowCount !== 1)
+      return reply.code(409).send({ error: "outbox_claim_expired" });
     return { completed: true, status };
   });
 
@@ -2216,8 +2225,15 @@ export function buildApp(options: AppOptions): FastifyInstance {
   }>("/v1/community/rss-feeds", async (request, reply) => {
     if (request.service !== "community")
       return reply.code(403).send({ error: "forbidden" });
+    let feedUrl: URL;
     try {
-      new URL(request.body.url);
+      feedUrl = new URL(request.body.url);
+      if (
+        !["http:", "https:"].includes(feedUrl.protocol) ||
+        feedUrl.username ||
+        feedUrl.password
+      )
+        throw new Error("unsupported_feed_url");
     } catch {
       return reply.code(400).send({ error: "invalid_feed_url" });
     }
@@ -2233,7 +2249,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
       `INSERT INTO rss_feeds (guild_id, url, display_name, announcement_channel_id, interval_seconds, created_by) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (guild_id, url) DO UPDATE SET display_name = EXCLUDED.display_name, announcement_channel_id = EXCLUDED.announcement_channel_id, interval_seconds = EXCLUDED.interval_seconds, enabled = TRUE, updated_at = NOW() RETURNING id::text, url, display_name, announcement_channel_id, interval_seconds, next_poll_at`,
       [
         request.body.guildId,
-        request.body.url,
+        feedUrl.toString(),
         request.body.displayName,
         request.body.channelId,
         interval,
@@ -2281,6 +2297,18 @@ export function buildApp(options: AppOptions): FastifyInstance {
   }>("/v1/community/rss-feeds/:id/items", async (request, reply) => {
     if (request.service !== "community")
       return reply.code(403).send({ error: "forbidden" });
+    const publishedAt = request.body.publishedAt
+      ? new Date(request.body.publishedAt)
+      : null;
+    if (publishedAt && Number.isNaN(publishedAt.getTime()))
+      return reply.code(400).send({ error: "invalid_published_at" });
+    try {
+      const itemUrl = new URL(request.body.link);
+      if (!["http:", "https:"].includes(itemUrl.protocol))
+        throw new Error("unsupported_item_url");
+    } catch {
+      return reply.code(400).send({ error: "invalid_item_link" });
+    }
     const result = await options.pool.query(
       `INSERT INTO rss_items (feed_id, external_id, title, link, summary, published_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (feed_id, external_id) DO NOTHING RETURNING id::text, title, link, summary, published_at`,
       [
@@ -2289,7 +2317,7 @@ export function buildApp(options: AppOptions): FastifyInstance {
         request.body.title,
         request.body.link,
         request.body.summary ?? "",
-        request.body.publishedAt ? new Date(request.body.publishedAt) : null,
+        publishedAt,
       ],
     );
     return { inserted: result.rowCount === 1, item: result.rows[0] ?? null };
